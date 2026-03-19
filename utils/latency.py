@@ -1,5 +1,4 @@
 import time
-from azure.ai.inference.models import UserMessage, SystemMessage
 
 
 def _extract_request_uri(exc, client, fallback_path: str) -> str:
@@ -12,9 +11,9 @@ def _extract_request_uri(exc, client, fallback_path: str) -> str:
         if candidate:
             return str(candidate)
 
-    endpoint = str(getattr(client, "_endpoint", "")).rstrip("/")
-    if endpoint:
-        return f"{endpoint}{fallback_path}"
+    base_url = str(getattr(client, "base_url", getattr(client, "_endpoint", ""))).rstrip("/")
+    if base_url:
+        return f"{base_url}{fallback_path}"
     return f"<unknown>{fallback_path}"
 
 
@@ -35,15 +34,16 @@ def measure_latency(client, messages: list, model: str, **kwargs) -> dict:
     completion_tokens = 0
 
     try:
-        response = client.complete(
+        response = client.chat.completions.create(
             model=model,
             messages=messages,
             stream=True,
+            stream_options={"include_usage": True},
             **kwargs,
         )
 
         for chunk in response:
-            if chunk.choices and chunk.choices[0].delta.content:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 if ttft is None:
                     ttft = time.perf_counter() - start
                 chunks.append(chunk.choices[0].delta.content)
@@ -99,8 +99,8 @@ def run_latency_test(
     results = []
     for i, prompt in enumerate(prompts):
         messages = [
-            SystemMessage(content=system_prompt),
-            UserMessage(content=prompt),
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
         ]
         result = measure_latency(client, messages, model, **kwargs)
         result["model"] = model

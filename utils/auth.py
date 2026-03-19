@@ -1,43 +1,27 @@
 import os
 from dotenv import load_dotenv
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from azure.ai.inference import ChatCompletionsClient
 
 
 load_dotenv()
 
 
-def _normalize_openai_base_url(endpoint: str) -> str:
-    """Normalize an endpoint into an OpenAI-compatible /openai/v1/ base URL."""
-    normalized_endpoint = endpoint.rstrip("/")
-    if normalized_endpoint.endswith("/openai/v1"):
-        return f"{normalized_endpoint}/"
-    if normalized_endpoint.endswith("/openai"):
-        return f"{normalized_endpoint}/v1/"
-    return f"{normalized_endpoint}/openai/v1/"
+def get_client(endpoint: str | None = None):
+    """Return an AzureOpenAI client for an Azure OpenAI / Foundry endpoint.
 
-
-def get_client(endpoint: str | None = None) -> ChatCompletionsClient:
-    """Return an authenticated ChatCompletionsClient for an Azure AI Foundry endpoint.
-
-    Uses DefaultAzureCredential (managed identity in Azure, CLI creds locally).
+    Works for both Chat Completions (client.chat.completions) and Responses
+    (client.responses) APIs.  Uses DefaultAzureCredential for auth.
     Falls back to AZURE_ENDPOINT env var if no endpoint is provided.
     """
-    endpoint = endpoint or os.getenv("AZURE_ENDPOINT")
-    if not endpoint:
-        raise ValueError(
-            "No endpoint provided. Pass an endpoint or set AZURE_ENDPOINT in .env"
-        )
-
-    credential = DefaultAzureCredential()
-    return ChatCompletionsClient(endpoint=endpoint, credential=credential)
+    return get_openai_client(endpoint=endpoint)
 
 
 def get_openai_client(endpoint: str | None = None):
-    """Return an AzureOpenAI client configured for Azure AI Foundry's Responses API.
+    """Return an AzureOpenAI client for an Azure OpenAI / Foundry endpoint.
 
-    Uses DefaultAzureCredential (managed identity in Azure, CLI creds locally).
-    The base_url is normalized to end with /openai/v1/.
+    Works for both Chat Completions (client.chat.completions) and Responses
+    (client.responses) APIs.  Uses DefaultAzureCredential for auth.
+    Falls back to AZURE_ENDPOINT env var if no endpoint is provided.
     """
     from openai import AzureOpenAI
 
@@ -52,12 +36,10 @@ def get_openai_client(endpoint: str | None = None):
         "https://cognitiveservices.azure.com/.default",
     )
 
-    base_url = _normalize_openai_base_url(endpoint)
     return AzureOpenAI(
-        azure_endpoint=endpoint.rstrip("/"),
         azure_ad_token_provider=token_provider,
         api_version="2025-04-01-preview",
-        base_url=base_url,
+        azure_endpoint=endpoint,
     )
 
 

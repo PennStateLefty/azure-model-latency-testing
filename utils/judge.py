@@ -1,5 +1,4 @@
 import json
-from azure.ai.inference.models import UserMessage, SystemMessage
 
 
 JUDGE_SYSTEM_PROMPT = """You are an impartial judge evaluating two AI model responses to the same prompt.
@@ -66,11 +65,11 @@ def judge_response(
         f"**Response B ({model_b_name}):**\n{response_b}"
     )
 
-    response = client.complete(
+    response = client.chat.completions.create(
         model=judge_model,
         messages=[
-            SystemMessage(content=system_msg),
-            UserMessage(content=user_msg),
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
         ],
         temperature=0.0,
     )
