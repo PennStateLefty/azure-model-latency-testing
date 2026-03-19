@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone
 
 
 def _extract_request_uri(exc, client, fallback_path: str) -> str:
@@ -37,7 +38,18 @@ def _record_final_response(response) -> dict:
         "output_tokens": getattr(usage, "output_tokens", 0) if usage else 0,
         "input_tokens": getattr(usage, "input_tokens", 0) if usage else 0,
         "total_tokens": getattr(usage, "total_tokens", 0) if usage else 0,
+        "reasoning_tokens": _safe_reasoning_tokens(usage),
     }
+
+
+def _safe_reasoning_tokens(usage) -> int:
+    """Extract reasoning_tokens from usage.output_tokens_details if available."""
+    if not usage:
+        return 0
+    details = getattr(usage, "output_tokens_details", None)
+    if not details:
+        return 0
+    return getattr(details, "reasoning_tokens", 0) or 0
 
 
 def measure_responses_latency(client, messages: list, model: str, **kwargs) -> dict:
@@ -52,12 +64,14 @@ def measure_responses_latency(client, messages: list, model: str, **kwargs) -> d
     Returns:
         dict with latency metrics, generated text, and normalized safety metadata
     """
+    run_timestamp = datetime.now(timezone.utc).isoformat()
     start = time.perf_counter()
     ttft = None
     chunks = []
     completion_tokens = 0
     input_tokens = 0
     total_tokens = 0
+    reasoning_tokens = 0
     final_status = None
     incomplete_reason = None
     annotation_events = []
@@ -100,6 +114,7 @@ def measure_responses_latency(client, messages: list, model: str, **kwargs) -> d
                 completion_tokens = final_response["output_tokens"]
                 input_tokens = final_response["input_tokens"]
                 total_tokens = final_response["total_tokens"]
+                reasoning_tokens = final_response["reasoning_tokens"]
     except Exception as exc:
         request_uri = _extract_request_uri(exc, client, "/responses")
         raise RuntimeError(
@@ -116,6 +131,8 @@ def measure_responses_latency(client, messages: list, model: str, **kwargs) -> d
 
     response_text = "".join(chunks)
     tokens_per_second = completion_tokens / total_time if total_time > 0 else 0
+    decode_time = (total_time - ttft) if ttft else total_time
+    decode_tokens_per_second = completion_tokens / decode_time if decode_time > 0 else 0
     first_annotation_time = annotation_events[0]["seconds_since_start"] if annotation_events else None
     last_annotation_time = annotation_events[-1]["seconds_since_start"] if annotation_events else None
 
@@ -123,10 +140,13 @@ def measure_responses_latency(client, messages: list, model: str, **kwargs) -> d
         "ttft": round(ttft, 4) if ttft else None,
         "total_time": round(total_time, 4),
         "tokens_per_second": round(tokens_per_second, 2),
+        "decode_tokens_per_second": round(decode_tokens_per_second, 2),
         "completion_tokens": completion_tokens,
+        "reasoning_tokens": reasoning_tokens,
         "input_tokens": input_tokens,
         "total_tokens": total_tokens,
         "response_text": response_text,
+        "run_timestamp": run_timestamp,
         "final_status": final_status,
         "incomplete_reason": incomplete_reason,
         "content_filter_triggered": incomplete_reason == "content_filter",
@@ -143,6 +163,10 @@ def run_responses_latency_test(
     model: str,
     prompts: list[str],
     system_prompt: str = "You are a helpful assistant.",
+    num_iterations: int = 1,
+    warmup: int = 0,
+    reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
     **kwargs,
 ) -> list[dict]:
     """Run Responses API latency measurements across multiple prompts.
@@ -152,20 +176,41 @@ def run_responses_latency_test(
         model: Model deployment name
         prompts: List of user prompt strings to test
         system_prompt: System message for all requests
+        num_iterations: Number of times to repeat the full prompt set
+        warmup: Number of throwaway requests before measured runs
+        reasoning_effort: Reasoning effort level ("low", "medium", "high") or None
+        max_output_tokens: Cap on output tokens per request, or None for unlimited
         **kwargs: Additional args passed to client.responses.create()
 
     Returns:
-        List of result dicts, one per prompt.
+        List of result dicts, one per prompt per iteration.
     """
-    results = []
-    for i, prompt in enumerate(prompts):
-        messages = [
+    if reasoning_effort:
+        kwargs["reasoning"] = {"effort": reasoning_effort}
+    if max_output_tokens is not None:
+        kwargs["max_output_tokens"] = max_output_tokens
+
+    # Warm-up: run throwaway requests to avoid cold-start skew
+    if warmup > 0:
+        warmup_messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": prompts[0]},
         ]
-        result = measure_responses_latency(client, messages, model, **kwargs)
-        result["model"] = model
-        result["prompt_index"] = i
-        result["prompt"] = prompt[:100]
-        results.append(result)
+        for _ in range(warmup):
+            measure_responses_latency(client, warmup_messages, model, **kwargs)
+
+    results = []
+    for iteration in range(num_iterations):
+        for i, prompt in enumerate(prompts):
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+            result = measure_responses_latency(client, messages, model, **kwargs)
+            result["model"] = model
+            result["prompt_index"] = i
+            result["prompt"] = prompt[:100]
+            result["iteration"] = iteration
+            result["reasoning_effort"] = reasoning_effort
+            results.append(result)
     return results
